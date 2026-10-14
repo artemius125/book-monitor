@@ -3,12 +3,14 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from urllib.parse import urlsplit
 from .ai import AI, AIUnavailable
 from .extract import classify
 from .fetch import Fetcher, FetchError
 from .ingest import norm, author_key
 from .matching import decide_match, rank_books, collection_match
+from .auto_grouping import AutoGrouper
 
 
 class Engine:
@@ -18,14 +20,46 @@ class Engine:
         self.ai = AI(cfg, store)
         self.workers = []
         self.stopping = False
+        self.grouper = AutoGrouper(cfg,store,self.ai,self.fetcher)
+        self.grouping_wake = asyncio.Event()
+        self.grouping_ready = asyncio.Event()
+        self.grouping_worker = None
+
+    def request_grouping(self):
+        self.grouping_ready.clear()
+        self.grouping_wake.set()
+
+    async def group_loop(self):
+        while not self.stopping:
+            await self.grouping_wake.wait()
+            self.grouping_wake.clear()
+            try:
+                budget_id="groups:"+uuid.uuid4().hex
+                while True:
+                    report=await self.grouper.run(budget_id)
+                    if not report["remaining"]:
+                        break
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.store.event("group_internal_error","AI-разбор групп: ошибка "+type(e).__name__)
+            finally:
+                if not self.grouping_wake.is_set():
+                    self.grouping_ready.set()
 
     async def start(self):
         # A single service process owns the queue. Recover interrupted tasks on restart.
         self.store.execute("UPDATE tasks SET state='pending' WHERE state='running'")
+        self.request_grouping()
+        self.grouping_worker=asyncio.create_task(self.group_loop(),name="book-grouping")
         self.workers = [asyncio.create_task(self.worker(), name=f"worker-{i}") for i in range(self.cfg.concurrency)]
 
     async def close(self):
         self.stopping = True
+        if self.grouping_worker:
+            self.grouping_worker.cancel()
+            await asyncio.gather(self.grouping_worker,return_exceptions=True)
         for t in self.workers:
             t.cancel()
         await asyncio.gather(*self.workers, return_exceptions=True)
@@ -34,6 +68,7 @@ class Engine:
 
     async def worker(self):
         while not self.stopping:
+            await self.grouping_ready.wait()
             task = self.store.claim()
             if not task:
                 await asyncio.sleep(.5)

@@ -104,6 +104,14 @@ def main():
         uvicorn.run(create_app(cfg), host="127.0.0.1" if not os.getenv("MONITOR_CONTAINER") else "0.0.0.0", port=args.port, log_level="info", access_log=False)
     elif args.command == "import":
         report = read_workbook(args.file.read_bytes(), args.file.name, store)
+        async def group_import():
+            engine=Engine(cfg,store)
+            try:
+                while (await engine.grouper.run("groups:"+report["import_id"]))["remaining"]:
+                    await asyncio.sleep(0)
+            finally:
+                await engine.close()
+        asyncio.run(group_import())
         path = cfg.data_dir / "reports" / f"{report['import_id']}-records.csv"
         rows=[{**r,"raw":json.dumps(r["raw"],ensure_ascii=False),"prepared":json.dumps(r["prepared"],ensure_ascii=False)} for r in decorated_records(store,report["import_id"])]
         path.write_text(records_csv(rows), encoding="utf-8")

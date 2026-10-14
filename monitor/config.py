@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     ai_model: str = "gpt-4.1-mini"
     vision_model: str = "gpt-4.1"
     ai_enabled: bool = False
+    ai_auto_grouping: bool = True
+    grouping_batch_size: int = 10
     ai_daily_budget_rub: float = 10
     ai_job_budget_rub: float = 5
     min_balance_rub: float = 20

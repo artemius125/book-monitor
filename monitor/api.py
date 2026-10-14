@@ -95,6 +95,7 @@ def create_app(settings=None):
             report = await asyncio.to_thread(read_workbook, data, Path(file.filename or "input.xlsx").name, store)
         except Exception as e:
             raise HTTPException(400, str(e) if isinstance(e, ValueError) else "Не удалось прочитать Excel")
+        engine.request_grouping()
         return report
 
     @app.get("/api/imports")
@@ -116,7 +117,17 @@ def create_app(settings=None):
 
     @app.get("/api/book-groups")
     def groups():
-        return {"books":store.books(),"suggestions":suggestions(store)}
+        return {"books":store.books(),"suggestions":suggestions(store),
+                "automation":{"enabled":cfg.ai_enabled and cfg.ai_auto_grouping,
+                              "running":not engine.grouping_ready.is_set()}}
+
+    @app.post("/api/book-groups/analyze")
+    def analyze_groups():
+        if not cfg.ai_enabled or not cfg.ai_auto_grouping:
+            raise HTTPException(400,"Подключите AI и включите MONITOR_AI_AUTO_GROUPING")
+        store.execute("DELETE FROM ai_group_decisions WHERE state IN ('uncertain','deferred')")
+        engine.request_grouping()
+        return {"state":"queued"}
 
     @app.get("/api/book-groups/{bid}")
     def group(bid:str):
@@ -149,6 +160,9 @@ def create_app(settings=None):
             raise HTTPException(404,"Предложение не найдено")
         import time
         store.execute("INSERT OR REPLACE INTO merge_reviews VALUES(?,?,?,?)",(pair_id,body.state,body.reason,time.time()))
+        if body.state=="pending":
+            store.execute("DELETE FROM ai_group_decisions WHERE pair_id=?",(pair_id,))
+            engine.request_grouping()
         store.event("merge_review","Объединение отклонено" if body.state=="rejected" else "Предложение возвращено на проверку",level="info")
         return {"state":body.state}
 
@@ -161,6 +175,7 @@ def create_app(settings=None):
             db.execute("DELETE FROM book_merges")
             db.execute("DELETE FROM book_profiles")
             db.execute("DELETE FROM merge_reviews")
+            db.execute("DELETE FROM ai_group_decisions")
             db.execute("DELETE FROM books WHERE provisional=1")
             for b in items:
                 db.execute("INSERT OR REPLACE INTO books VALUES(?,?,?,?,0,'[]')", (b.id,b.title,b.author,b.format))
@@ -179,6 +194,7 @@ def create_app(settings=None):
                 raise HTTPException(400, str(e))
         if not rows:
             raise HTTPException(400, "Список URL пуст")
+        engine.request_grouping()
         return {"job_id": store.create_job(rows, body.model_dump(exclude={"urls"}))}
 
     @app.get("/api/jobs")

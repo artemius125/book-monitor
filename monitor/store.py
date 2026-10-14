@@ -27,6 +27,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS book_merges(source_id TEXT PRIMARY KEY, target_id TEXT, reason TEXT, created REAL);
             CREATE TABLE IF NOT EXISTS book_profiles(book_id TEXT PRIMARY KEY, title TEXT, author TEXT);
             CREATE TABLE IF NOT EXISTS merge_reviews(pair_id TEXT PRIMARY KEY, state TEXT, reason TEXT, created REAL);
+            CREATE TABLE IF NOT EXISTS ai_group_decisions(pair_id TEXT PRIMARY KEY, input_hash TEXT, state TEXT, decision TEXT, created REAL);
             """)
         self.path.chmod(0o600)
 

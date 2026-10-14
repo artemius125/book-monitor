@@ -1,4 +1,5 @@
-"""Non-destructive, operator-confirmed book groups and provenance-preserving aliases."""
+"""Reversible book groups and provenance-preserving aliases."""
+import hashlib
 import json
 import re
 import time
@@ -74,6 +75,7 @@ def incompatible(left,right):
 def suggestions(store):
     books = canonical_books(store)
     reviews = {r["pair_id"]:r for r in store.query("SELECT * FROM merge_reviews")}
+    ai_reviews = {r["pair_id"]:r for r in store.query("SELECT * FROM ai_group_decisions")}
     # Token blocking limits candidate work for large catalogs; no all-pairs LLM calls.
     buckets = defaultdict(set)
     for i,b in enumerate(books):
@@ -116,10 +118,25 @@ def suggestions(store):
         # A prior rejection survives later merging of either side with another group.
         rejected = any(reviews.get(stable_id(*sorted([a,b])),{}).get("state")=="rejected"
                        for a in left["member_ids"] for b in right["member_ids"])
-        out.append({"id":pid,"left":left,"right":right,"title_score":round(ts,1),
+        held = any(reviews.get(stable_id(*sorted([a,b])),{}).get("state")=="held"
+                   for a in left["member_ids"] for b in right["member_ids"])
+        proposal={"id":pid,"left":left,"right":right,"title_score":round(ts,1),
                     "author_score":round(aus,1),"reason":reason,
-                    "state":"rejected" if rejected else review.get("state","pending")})
+                    "state":"rejected" if rejected else "held" if held else review.get("state","pending")}
+        ai_review=ai_reviews.get(pid)
+        if ai_review and ai_review["input_hash"]==proposal_hash(proposal):
+            proposal["ai_decision"]=json.loads(ai_review["decision"])
+            if proposal["state"]=="pending":
+                proposal["state"]=ai_review["state"]
+        out.append(proposal)
     return out
+
+
+def proposal_hash(pair):
+    # Source changes allow a new assessment; identical inputs are assessed once.
+    payload=[{k:b[k] for k in ("id","member_ids","aliases","urls","provisional")}
+             for b in (pair["left"],pair["right"])]
+    return hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 
 def merge(store,source_id,target_id,reason,title=None,author=None):
@@ -162,6 +179,9 @@ def undo(store,source_id):
         if not row:
             raise ValueError("Объединение не найдено")
         db.execute("DELETE FROM book_merges WHERE source_id=?",(source_id,))
+        pid=stable_id(*sorted([source_id,row["target_id"]]))
+        db.execute("INSERT OR REPLACE INTO merge_reviews VALUES(?,?,?,?)",
+                   (pid,"held","Объединение отменено: не применять автоматически повторно",time.time()))
         # Drop the merged presentation; surviving groups re-derive it from their sources.
         db.execute("DELETE FROM book_profiles WHERE book_id=?",(resolve(row["target_id"],graph(store)),))
     store.event("merge_undone","Объединение отменено; исходные записи восстановлены",level="info")
@@ -169,6 +189,8 @@ def undo(store,source_id):
 
 def decorated_records(store,import_id):
     books=canonical_books(store)
+    pairs=suggestions(store)
+    pair_map={frozenset((p["left"]["id"],p["right"]["id"])):p for p in pairs}
     mapping={mid:b for b in books for mid in b["member_ids"]}
     rows=store.query("SELECT * FROM records WHERE import_id=? ORDER BY sheet,row_number",(import_id,))
     title_groups=defaultdict(set)
@@ -184,7 +206,12 @@ def decorated_records(store,import_id):
             p.update(canonical_book_id=b["id"],canonical_title=b["title"],canonical_author=b["author"],
                      same_book_rows=[rid for rid in b["source_ids"] if rid!=r["id"]])
             p["warnings"]=[w for w in p["warnings"] if w!=AMBIGUOUS]
-            if len(title_groups[p["title_key"]])>1:
+            related=[pair_map.get(frozenset((b["id"],other)))
+                     for other in title_groups[p["title_key"]] if other!=b["id"]]
+            distinct=bool(related) and all(pair and pair["state"] in ("different","rejected") for pair in related)
+            p["grouping_status"]="distinct" if distinct else "merged" if b["merge_count"] and not related else "unresolved" if related else "exact"
+            p["grouping_notes"]=[pair.get("ai_decision",{}).get("reason",pair["reason"]) for pair in related if pair]
+            if related and not distinct:
                 p["warnings"].append(AMBIGUOUS)
     return rows
 
@@ -199,4 +226,9 @@ def group_detail(store,book_id):
     b["sources"]=[{**r,"raw":json.loads(r["raw"]),"prepared":json.loads(r["prepared"])}
                   for r in store.query("SELECT * FROM records ORDER BY import_id,sheet,row_number") if r["id"] in ids]
     b["merges"]=[r for r in store.query("SELECT * FROM book_merges") if resolve(r["source_id"],links)==bid]
+    b["ai_history"]=[]
+    for row in store.query("SELECT * FROM ai_group_decisions ORDER BY created"):
+        decision=json.loads(row["decision"])
+        if decision.get("left_id") in b["member_ids"] or decision.get("right_id") in b["member_ids"]:
+            b["ai_history"].append({"state":row["state"],"created":row["created"],**decision})
     return b
