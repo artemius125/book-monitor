@@ -13,6 +13,7 @@ from .engine import Engine, records_for_job
 from .ingest import read_workbook, url_key
 from .reports import task_report, task_csv, records_csv
 from .ai import AIUnavailable
+from .grouping import decorated_records, suggestions, merge, undo, group_detail
 
 
 class JobInput(BaseModel):
@@ -27,6 +28,19 @@ class BookInput(BaseModel):
     title: str
     author: str
     format: str = "ebook"
+
+
+class MergeInput(BaseModel):
+    source_id: str
+    target_id: str
+    reason: str = Field(min_length=1,max_length=1500)
+    title: str | None = None
+    author: str | None = None
+
+
+class ReviewInput(BaseModel):
+    state: str
+    reason: str = ""
 
 
 def create_app(settings=None):
@@ -58,6 +72,10 @@ def create_app(settings=None):
     def home():
         return FileResponse(Path(__file__).parent / "static" / "index.html")
 
+    @app.get("/assets/groups.js")
+    def groups_script():
+        return FileResponse(Path(__file__).parent / "static" / "groups.js",media_type="text/javascript")
+
     @app.get("/api/health")
     def health():
         return {"status": "ok", "ai_enabled": cfg.ai_enabled, "ai_model": cfg.ai_model, "vision_model": cfg.vision_model,
@@ -85,16 +103,54 @@ def create_app(settings=None):
 
     @app.get("/api/imports/{iid}/records")
     def records(iid: str):
-        return [{**r, "raw": json.loads(r["raw"]), "prepared": json.loads(r["prepared"])} for r in store.query("SELECT * FROM records WHERE import_id=? ORDER BY sheet,row_number", (iid,))]
+        return decorated_records(store,iid)
 
     @app.get("/api/imports/{iid}/report.csv")
     def import_csv(iid: str):
-        rows = store.query("SELECT * FROM records WHERE import_id=? ORDER BY sheet,row_number", (iid,))
+        rows = [{**r,"raw":json.dumps(r["raw"],ensure_ascii=False),"prepared":json.dumps(r["prepared"],ensure_ascii=False)} for r in decorated_records(store,iid)]
         return Response(records_csv(rows), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=records.csv"})
 
     @app.get("/api/books")
     def books():
         return store.books()
+
+    @app.get("/api/book-groups")
+    def groups():
+        return {"books":store.books(),"suggestions":suggestions(store)}
+
+    @app.get("/api/book-groups/{bid}")
+    def group(bid:str):
+        try:
+            return group_detail(store,bid)
+        except ValueError as e:
+            raise HTTPException(404,str(e))
+
+    @app.post("/api/book-merges")
+    def merge_books(body:MergeInput):
+        try:
+            bid=merge(store,body.source_id,body.target_id,body.reason,body.title,body.author)
+        except ValueError as e:
+            raise HTTPException(400,str(e))
+        return {"book_id":bid,"book":group_detail(store,bid),"note":"Новые проверки используют объединение; прежние результаты не переписываются"}
+
+    @app.post("/api/book-merges/{source_id}/undo")
+    def unmerge(source_id:str):
+        try:
+            undo(store,source_id)
+        except ValueError as e:
+            raise HTTPException(400,str(e))
+        return {"undone":True}
+
+    @app.post("/api/book-merge-reviews/{pair_id}")
+    def review(pair_id:str,body:ReviewInput):
+        if body.state not in ("pending","rejected"):
+            raise HTTPException(400,"Допустимы pending или rejected")
+        if not any(p["id"]==pair_id for p in suggestions(store)):
+            raise HTTPException(404,"Предложение не найдено")
+        import time
+        store.execute("INSERT OR REPLACE INTO merge_reviews VALUES(?,?,?,?)",(pair_id,body.state,body.reason,time.time()))
+        store.event("merge_review","Объединение отклонено" if body.state=="rejected" else "Предложение возвращено на проверку",level="info")
+        return {"state":body.state}
 
     @app.post("/api/catalog")
     def catalog(items: list[BookInput]):
@@ -102,6 +158,9 @@ def create_app(settings=None):
             raise HTTPException(400, "Каталог требует id, название и автора; максимум 50000 книг")
         # Authoritative catalog replaces provisional links; records preserve their original proposed ids.
         with store.db() as db:
+            db.execute("DELETE FROM book_merges")
+            db.execute("DELETE FROM book_profiles")
+            db.execute("DELETE FROM merge_reviews")
             db.execute("DELETE FROM books WHERE provisional=1")
             for b in items:
                 db.execute("INSERT OR REPLACE INTO books VALUES(?,?,?,?,0,'[]')", (b.id,b.title,b.author,b.format))

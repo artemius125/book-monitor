@@ -24,6 +24,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS ai_calls(id INTEGER PRIMARY KEY, created REAL, job_id TEXT, task_id TEXT, model TEXT, cost REAL, usage TEXT);
             CREATE TABLE IF NOT EXISTS ai_cache(key TEXT PRIMARY KEY, created REAL, response TEXT);
             CREATE TABLE IF NOT EXISTS page_cache(key TEXT PRIMARY KEY, created REAL, response TEXT);
+            CREATE TABLE IF NOT EXISTS book_merges(source_id TEXT PRIMARY KEY, target_id TEXT, reason TEXT, created REAL);
+            CREATE TABLE IF NOT EXISTS book_profiles(book_id TEXT PRIMARY KEY, title TEXT, author TEXT);
+            CREATE TABLE IF NOT EXISTS merge_reviews(pair_id TEXT PRIMARY KEY, state TEXT, reason TEXT, created REAL);
             """)
         self.path.chmod(0o600)
 
@@ -51,10 +54,8 @@ class Store:
         getattr(log, level if level in ("info", "warning", "error") else "info")("%s task=%s %s", code, task_id or "-", message)
 
     def books(self):
-        result = self.query("SELECT * FROM books")
-        for r in result:
-            r["source_ids"] = json.loads(r["source_ids"])
-        return result
+        from .grouping import canonical_books
+        return canonical_books(self)
 
     def create_job(self, records, options):
         jid = uuid.uuid4().hex

@@ -10,6 +10,7 @@ from .store import Store
 from .engine import Engine, records_for_job
 from .ingest import read_workbook
 from .reports import task_report, task_csv, records_csv
+from .grouping import decorated_records
 
 
 def configure_log(root):
@@ -104,7 +105,8 @@ def main():
     elif args.command == "import":
         report = read_workbook(args.file.read_bytes(), args.file.name, store)
         path = cfg.data_dir / "reports" / f"{report['import_id']}-records.csv"
-        path.write_text(records_csv(store.query("SELECT * FROM records WHERE import_id=? ORDER BY sheet,row_number", (report["import_id"],))), encoding="utf-8")
+        rows=[{**r,"raw":json.dumps(r["raw"],ensure_ascii=False),"prepared":json.dumps(r["prepared"],ensure_ascii=False)} for r in decorated_records(store,report["import_id"])]
+        path.write_text(records_csv(rows), encoding="utf-8")
         print(json.dumps({**report, "report_csv": str(path.resolve())}, ensure_ascii=False, indent=2))
     elif args.command == "run":
         import fcntl

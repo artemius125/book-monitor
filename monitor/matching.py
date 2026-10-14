@@ -27,13 +27,17 @@ def rank_books(title, author, books, limit=5):
     tn, an = norm(title), author_key(author)
     result = []
     for b in books:
-        bt, ba = norm(b["title"]), author_key(b["author"])
-        ts = fuzz.ratio(tn, bt)
-        aus = fuzz.ratio(an, ba) if an else 0
-        conflict = bool(volumes(title) and volumes(b["title"]) and volumes(title) != volumes(b["title"]))
-        score = .72*ts + .28*aus if an else .72*ts
+        variants=[]
+        for alias in b.get("aliases",[{"title":b["title"],"author":b["author"]}]):
+            ts=fuzz.ratio(tn,norm(alias["title"]))
+            aus=fuzz.ratio(an,author_key(alias["author"])) if an else 0
+            conflict=bool(volumes(title) and volumes(alias["title"]) and volumes(title)!=volumes(alias["title"]))
+            score=.72*ts+.28*aus if an else .72*ts
+            variants.append((not conflict,score,ts,aus,alias))
+        valid,score,ts,aus,alias=max(variants,key=lambda x:(x[0],x[1]))
+        conflict=not valid
         result.append({**b, "title_score": round(ts, 1), "author_score": round(aus, 1),
-                       "score": round(score, 1), "volume_conflict": conflict})
+                       "score": round(score, 1), "volume_conflict": conflict,"matched_alias":alias})
     return sorted(result, key=lambda b: (not b["volume_conflict"], b["score"]), reverse=True)[:limit]
 
 
@@ -60,13 +64,13 @@ def collection_match(extracted, books, preferred_id=None):
         return None
     found = []
     for b in books:
-        if fuzz.ratio(author_key(b["author"]), author_key(extracted["author"])) < 94:
-            continue
-        if any(norm(t) == norm(b["title"]) for t in titles):
-            found.append(b)
+        for alias in b.get("aliases",[b]):
+            if fuzz.ratio(author_key(alias["author"]),author_key(extracted["author"]))>=94 and any(norm(t)==norm(alias["title"]) for t in titles):
+                found.append({**b,"matched_alias":alias})
+                break
     if not found:
         return None
-    selected = next((b for b in found if b["id"] == preferred_id), found[0])
+    selected = next((b for b in found if b["id"] == preferred_id or preferred_id in b.get("member_ids",[])), found[0])
     return {"state": "matched", "book": selected, "candidates": found,
             "reason": "Автор совпал; книга явно перечислена в составе сборника", "collection": True,
-            "title_quote": next(t for t in titles if norm(t) == norm(selected["title"]))}
+            "title_quote": next(t for t in titles if norm(t) == norm(selected["matched_alias"]["title"]))}

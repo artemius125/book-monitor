@@ -151,7 +151,7 @@ Do not replace the main title with a book only mentioned in recommendations. For
 an explicit list of included books may establish a catalog match, with a quote from that list.
 """
         content = json.dumps({"PAGE_TEXT": page["text"][:16000], "PAGE_LINKS": page["links"][:40],
-                              "CANDIDATES": [{k:b[k] for k in ("id","title","author","format")} for b in candidates]}, ensure_ascii=False)
+                              "CANDIDATES": [{**{k:b[k] for k in ("id","title","author","format")},"confirmed_aliases":b.get("aliases",[])} for b in candidates]}, ensure_ascii=False)
         return await self.call(Analysis, system, content, job_id, task_id)
 
     async def diagnose_challenge(self, screenshot, task, text=""):

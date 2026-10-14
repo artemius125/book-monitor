@@ -34,8 +34,8 @@ def task_csv(rows):
 def records_csv(rows):
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["record_id","sheet","row","raw","title","author","format","url","book_id","duplicate_url_rows","same_book_rows","warnings"])
+    writer.writerow(["record_id","sheet","row","raw","title","author","format","url","book_id","canonical_book_id","canonical_title","canonical_author","duplicate_url_rows","same_book_rows","warnings"])
     for r in rows:
         p = json.loads(r["prepared"])
-        writer.writerow(map(safe_cell, [r["id"],r["sheet"],r["row_number"],r["raw"],p["title"],p["author"],p["format"],p["url"],p["book_id"],json.dumps(p["duplicate_url_rows"]),json.dumps(p["same_book_rows"]),"; ".join(p["warnings"])]))
+        writer.writerow(map(safe_cell, [r["id"],r["sheet"],r["row_number"],r["raw"],p["title"],p["author"],p["format"],p["url"],p["book_id"],p.get("canonical_book_id",p["book_id"]),p.get("canonical_title",p["title"]),p.get("canonical_author",p["author"]),json.dumps(p["duplicate_url_rows"]),json.dumps(p["same_book_rows"]),"; ".join(p["warnings"])]))
     return "\ufeff"+out.getvalue()
