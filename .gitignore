@@ -1,0 +1,13 @@
+.venv/
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+ai-key.txt
+data/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.log
+.ruff_cache/

@@ -1,0 +1,10 @@
+services:
+  monitor:
+    environment:
+      MONITOR_AI_ENABLED: "true"
+      MONITOR_AI_KEY_FILE: /run/secrets/ai_key
+    secrets:
+      - ai_key
+secrets:
+  ai_key:
+    file: ${AI_KEY_FILE:?Set AI_KEY_FILE to your local secret file path}
